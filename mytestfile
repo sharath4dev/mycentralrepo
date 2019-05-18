@@ -1,1 +1,153 @@
-helo
+
+
+
+root@ops1:/home/anjan#  cat sunil_ssh.yml
+---
+- hosts: all
+  sudo: true
+  tasks:
+
+    - name: Fixing DHCP client config
+      shell: "/bin/mv /etc/dhcp/dhclient.conf /etc/dhcp/dhclient.conf_old && /bin/cp /etc/dhcp/dhclient.conf.dpkg-dist /etc/dhcp/dhclient.conf"
+      ignore_errors: yes
+
+   - name: Adding supersede line to dhclient file
+     lineinfile:
+       dest: /etc/ssh/sshd_config
+       line: {{ item }}
+     with_items: 
+      - "supersede domain-name \"op-zone1.sfo1\";"
+      - "supersede domain-name-servers 10.192.0.21,10.192.0.22;"
+       
+
+    - apt: name=ldap-utils state=present
+
+    - copy: src=/home/sunilk/osupdate/tools/ldap_ssh.sh dest=/etc/ssh/ldap_ssh.sh mode=0755
+
+    - lineinfile: dest=/etc/ssh/sshd_config line={{ item.line }}
+      with_items:
+        - { line: 'AuthorizedKeysCommand /etc/ssh/ldap_ssh.sh' }
+        - { line: 'AuthorizedKeysCommandUser root' }
+
+    - replace: dest=/etc/ssh/sshd_config regexp='without-password' replace='no'
+
+#    - apt: name=linux-generic-lts-trusty state=present
+
+    - file: path={{ item.pth }} mode={{ item.mde }}
+      with_items:
+        - { pth: /etc/nagios/nrpe.cfg, mde: "u=rwx,g=r,o=r" }
+        - { pth: /etc/nagios/nrpe.cfg.dpkg-dist, mde: "u=rwx,g=r,o=r" }
+        - { pth: /home/woot, mde: "u=rwx,g=rx,o-rwx" }
+      ignore_errors: True
+
+    - name: Update SSH AllowGroups
+      lineinfile: dest=/etc/ssh/sshd_config regexp="^AllowGroups" line="AllowGroups snapfish-sre tenant{{ tnt }} deploy-tenant{{ tnt }}" state=present
+      when:
+        - "'prd' not in inventory_hostname"
+      register: sshconfig1
+
+    - name: Update SSH AllowGroups
+      action: lineinfile dest=/etc/ssh/sshd_config regexp="^AllowGroups" line="AllowGroups snapfish-sre tenant{{ tnt }}-ops deploy-tenant{{ tnt }}" state=present
+      when:
+        - "'prd' in inventory_hostname"
+      register: sshconfig
+
+    - name: Restarting ssh
+      service: name=ssh state=restarted
+      when: sshconfig1.changed or sshconfig.changed
+
+
+
+===========================================================================================================================================================================================================
+
+
+reboot.yml 
+---
+- hosts: all
+  become: yes
+  tasks:
+
+   - name: Check that the Reboot file exists
+     stat:
+       path: /var/run/reboot-required
+     register: stat_result
+
+
+   - name: restart machine
+#     command: shutdown -r now "Ansible updates triggered"
+     shell: "sleep 5 && reboot"
+     async: 1
+     poll: 0
+     ignore_errors: true
+     when: stat_result.stat.exists == True
+     register: Restart
+
+#   - name: waiting for server to come back
+#     local_action: wait_for host={{ inventory_hostname }} port=22 delay=300 timeout=1200 state=started
+#     become: false
+#     when: Restart.changed
+#     register: reboot
+
+   - name: Wait for the reboot to complete if there was a change.
+     wait_for_connection:
+      connect_timeout: 20
+      sleep: 20
+      delay: 100
+      timeout: 120
+     when: Restart.changed
+#     register: reboot
+
+
+
+===========================================================================================================================================================================================================
+
+
+boot_reduce.yml 
+---
+- hosts: all
+  become: true
+  serial: 1
+
+  tasks:
+
+    - name: Reducing the /boot size by removing old kernels
+      shell: "dpkg -l linux-*|egrep 'image|headers'| awk '/^ii/{ print $2}'|grep -v -e `uname -r | cut -f1,2 -d'-'`| grep -e [0-9]| xargs sudo apt-get -y purge -"
+      when: ansible_os_family == "Debian"
+
+============================================================================================================================================================================================================
+
+
+set_bigip.yml 
+---
+- hosts: localhost
+  connection: local
+
+  roles:
+    - { role: deploy, become: yes }
+
+
+
+  vars_prompt:
+   - name : bigip_user
+     prompt: "Enter your bigip username"
+     private: no
+   - name: bigip_pwd
+     prompt: "Enter your bigip password"
+     private: yes
+
+
+
+============================================================================================================================================================================================================
+
+
+main.yml 
+---
+# tasks file for deploy
+
+#- include: bigip_create_pool.yml 
+#- include: bigip_create_node.yml  
+#- include: bigip_add_node.yml
+#- include: bigip_vip_create.yml
+
+
+============================================================================================================================================================================================================
